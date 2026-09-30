@@ -21,7 +21,7 @@ const mountDonorboxWidget = (container: HTMLDivElement) => {
 	script.async = true;
 
 	const widget = document.createElement('dbox-widget');
-	widget.setAttribute('campaign', 'pubpub-sustainability-fund');
+	widget.setAttribute('campaign', 'infrastructure-longevity-fund');
 	widget.setAttribute('type', 'donation_form');
 	widget.setAttribute('enable-auto-scroll', 'true');
 
