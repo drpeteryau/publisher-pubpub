@@ -58,7 +58,7 @@ const CommunityCreatedView = ({ subdomain, hubName }: { subdomain: string; hubNa
 				)}
 				<h2>Your Support Keeps PubPub Free and Open</h2>
 				<p>
-					PubPub is stewarded by a nonprofit hub,{' '}
+					PubPub is stewarded by a nonprofit organization,{' '}
 					<a
 						href="https://knowledgefutures.org"
 						target="_blank"
