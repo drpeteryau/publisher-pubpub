@@ -88,6 +88,20 @@ if (isProd() || isDuqDuq()) {
 	});
 }
 
+// Cloudflare Tunnel deployments (e.g. Coolify): a reverse proxy between
+// cloudflared and the app may reset X-Forwarded-Proto to `http`, which would
+// drop the `Secure` session cookie. Cloudflare's CF-Visitor header carries the
+// original scheme, so use it to restore the signal.
+if (env.TRUST_CF_VISITOR) {
+	appRouter.use((req, _res, next) => {
+		const visitor = req.headers['cf-visitor'];
+		if (typeof visitor === 'string' && /"scheme"\s*:\s*"https"/.test(visitor)) {
+			req.headers['x-forwarded-proto'] = 'https';
+		}
+		next();
+	});
+}
+
 if (env.NODE_ENV === 'production') {
 	Sentry.init({
 		dsn: 'https://abe1c84bbb3045bd982f9fea7407efaa@sentry.io/1505439',
