@@ -45,6 +45,9 @@ export const envSchema = z.object({
 	FORCE_BASE_PUBPUB: booleanish.describe('Force the base PubPub site in development/QubQub mode'),
 	PUBPUB_READ_ONLY: booleanish.describe('Enable read-only mode, disabling all mutations'),
 	DISABLE_SSL_REDIRECT: booleanish.describe('Disable automatic HTTP → HTTPS redirect'),
+	TRUST_CF_VISITOR: booleanish.describe(
+		'Treat requests carrying a Cloudflare `CF-Visitor: https` header as HTTPS (Cloudflare Tunnel deployments)',
+	),
 
 	// ── Database ─────────────────────────────────────────────────────────
 	DATABASE_URL: z.string().url().describe('Primary PostgreSQL connection URL'),

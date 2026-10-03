@@ -46,6 +46,9 @@ COPY patches/ patches/
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile
 
 COPY . .
+# Set CI=true to skip the Sentry sourcemap upload (no auth token needed)
+ARG CI
+ENV CI=$CI
 RUN pnpm run build-prod
 
 # ---- Development stage ----

@@ -1,0 +1,172 @@
+# Coolify / Cloudflare Tunnel deployment for PubPub.
+#
+# Coolify: New Resource -> Docker Compose (this repo) -> set the env vars listed
+# in coolify.env.example in the resource's "Environment Variables" tab.
+#
+# Routing to the app (pick ONE):
+#   A) Built-in tunnel (recommended): set COMPOSE_PROFILES=tunnel and TUNNEL_TOKEN,
+#      then in Cloudflare Zero Trust -> Tunnels -> Public Hostname add
+#      <your domain> -> HTTP -> app:3000 (the cloudflared container shares this
+#      compose network, so `app` resolves).
+#   B) Existing tunnel / Coolify Traefik: in Coolify set the domain for the `app`
+#      service as `http://<your domain>:3000` (http, port 3000) and point the
+#      tunnel at Coolify's proxy (http://localhost:80 or http://coolify-proxy:80).
+#
+# No ports are published to the host: Coolify/Traefik/cloudflared reach the app
+# over the internal network, so nothing collides with other Coolify resources.
+
+name: pubpub
+
+x-app-env: &app-env
+    NODE_ENV: production
+    PUBPUB_PRODUCTION: ${PUBPUB_PRODUCTION:-true}
+    DATABASE_URL: postgres://${POSTGRES_USER:-pubpub}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-pubpub}
+    CLOUDAMQP_URL: amqp://${RABBITMQ_USER:-pubpub}:${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD}@rabbitmq:5672/pubpub
+
+    # --- Required secrets (server/envSchema.ts rejects startup without these) ---
+    JWT_SIGNING_SECRET: ${JWT_SIGNING_SECRET:?set JWT_SIGNING_SECRET}
+    SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET}
+    AES_ENCRYPTION_KEY: ${AES_ENCRYPTION_KEY:?set AES_ENCRYPTION_KEY}
+    ALTCHA_HMAC_KEY: ${ALTCHA_HMAC_KEY:?set ALTCHA_HMAC_KEY}
+    FIREBASE_SERVICE_ACCOUNT_BASE64: ${FIREBASE_SERVICE_ACCOUNT_BASE64:?set FIREBASE_SERVICE_ACCOUNT_BASE64}
+    AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:?set AWS_ACCESS_KEY_ID}
+    AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:?set AWS_SECRET_ACCESS_KEY}
+    SMTP_HOST: ${SMTP_HOST:?set SMTP_HOST}
+    SMTP_PORT: ${SMTP_PORT:-587}
+    SMTP_USER: ${SMTP_USER:?set SMTP_USER}
+    SMTP_PASS: ${SMTP_PASS:?set SMTP_PASS}
+
+    # --- Required by the schema as strings, but safe to leave empty ---
+    AWS_BACKUP_ACCESS_KEY_ID: ${AWS_BACKUP_ACCESS_KEY_ID:-}
+    AWS_BACKUP_SECRET_ACCESS_KEY: ${AWS_BACKUP_SECRET_ACCESS_KEY:-}
+    S3_BACKUP_ENDPOINT: ${S3_BACKUP_ENDPOINT:-}
+    S3_BACKUP_ACCESS_KEY: ${S3_BACKUP_ACCESS_KEY:-}
+    S3_BACKUP_SECRET_KEY: ${S3_BACKUP_SECRET_KEY:-}
+    DOI_LOGIN_ID: ${DOI_LOGIN_ID:-}
+    DOI_LOGIN_PASSWORD: ${DOI_LOGIN_PASSWORD:-}
+    DOI_SUBMISSION_URL: ${DOI_SUBMISSION_URL:-https://test.crossref.org/servlet/deposit}
+    DATACITE_DEPOSIT_URL: ${DATACITE_DEPOSIT_URL:-https://api.test.datacite.org/dois}
+    ZOTERO_CLIENT_KEY: ${ZOTERO_CLIENT_KEY:-}
+    ZOTERO_CLIENT_SECRET: ${ZOTERO_CLIENT_SECRET:-}
+    FASTLY_SERVICE_ID: ${FASTLY_SERVICE_ID:-}
+    FASTLY_PURGE_TOKEN: ${FASTLY_PURGE_TOKEN:-}
+    SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+    SENTRY_AUTH_TOKEN: ${SENTRY_AUTH_TOKEN:-}
+    SENTRY_ORG: ${SENTRY_ORG:-}
+
+    # --- Optional ---
+    PUBPUB_LOCAL_COMMUNITY: ${PUBPUB_LOCAL_COMMUNITY:-}
+    CLOUDFLARE_ANALYTICS_API_TOKEN: ${CLOUDFLARE_ANALYTICS_API_TOKEN:-}
+    CLOUDFLARE_ZONE_TAG: ${CLOUDFLARE_ZONE_TAG:-}
+    CLOUDFLARE_CUSTOM_HOSTNAME_API_TOKEN: ${CLOUDFLARE_CUSTOM_HOSTNAME_API_TOKEN:-}
+    MAILCHIMP_API_KEY: ${MAILCHIMP_API_KEY:-}
+    BLOCKLIST_IP_ADDRESSES: ${BLOCKLIST_IP_ADDRESSES:-}
+
+    # TLS is terminated by Cloudflare; the origin only ever sees plain HTTP.
+    # Skip the HTTP->HTTPS redirect (it would loop) and trust Cloudflare's
+    # CF-Visitor header so the `Secure` session cookie is still set.
+    DISABLE_SSL_REDIRECT: ${DISABLE_SSL_REDIRECT:-true}
+    TRUST_CF_VISITOR: ${TRUST_CF_VISITOR:-true}
+
+x-build: &build
+    context: .
+    dockerfile: Dockerfile
+    target: runner
+    args:
+        CI: "true" # skip the Sentry sourcemap upload during the image build
+
+services:
+    app:
+        build: *build
+        image: pubpub-app:${SOURCE_COMMIT:-local}
+        restart: unless-stopped
+        environment:
+            <<: *app-env
+            PORT: "3000"
+        expose:
+            - "3000"
+        depends_on:
+            db:
+                condition: service_healthy
+            rabbitmq:
+                condition: service_healthy
+        networks: [appnet]
+        healthcheck:
+            test:
+                - CMD-SHELL
+                - >
+                    node -e "require('http').get('http://127.0.0.1:3000/api/health', r => process.exit(r.statusCode < 400 ? 0 : 1)).on('error', () => process.exit(1))"
+            interval: 15s
+            timeout: 5s
+            retries: 6
+            # first boot runs sequelize.sync + search trigger install
+            start_period: 120s
+
+    worker:
+        build: *build
+        image: pubpub-app:${SOURCE_COMMIT:-local}
+        restart: unless-stopped
+        command: ["pnpm", "run", "workers-prod"]
+        environment:
+            <<: *app-env
+        depends_on:
+            db:
+                condition: service_healthy
+            rabbitmq:
+                condition: service_healthy
+        networks: [appnet]
+
+    db:
+        image: postgres:16
+        restart: unless-stopped
+        shm_size: "256mb"
+        environment:
+            POSTGRES_USER: ${POSTGRES_USER:-pubpub}
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+            POSTGRES_DB: ${POSTGRES_DB:-pubpub}
+        volumes:
+            - pgdata:/var/lib/postgresql/data
+        networks: [appnet]
+        healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+            interval: 10s
+            timeout: 5s
+            retries: 10
+
+    rabbitmq:
+        image: rabbitmq:3.13-alpine
+        restart: unless-stopped
+        environment:
+            RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-pubpub}
+            RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD}
+            RABBITMQ_DEFAULT_VHOST: pubpub
+        volumes:
+            - rabbitmqdata:/var/lib/rabbitmq
+        networks: [appnet]
+        healthcheck:
+            test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+            interval: 15s
+            timeout: 10s
+            retries: 10
+            start_period: 30s
+
+    # Optional Cloudflare Tunnel connector. Enable with COMPOSE_PROFILES=tunnel.
+    cloudflared:
+        image: cloudflare/cloudflared:latest
+        profiles: ["tunnel"]
+        restart: unless-stopped
+        command: tunnel --no-autoupdate run
+        environment:
+            TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
+        depends_on:
+            app:
+                condition: service_healthy
+        networks: [appnet]
+
+networks:
+    appnet:
+        driver: bridge
+
+volumes:
+    pgdata:
+    rabbitmqdata:
