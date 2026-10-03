@@ -1,19 +1,14 @@
-# Coolify / Cloudflare Tunnel deployment for PubPub.
+# Reached through a Cloudflare Tunnel pointing at http://127.0.0.1:${PORT} on the
+# Docker host, so the port is published on loopback only. No domain is set in Coolify.
+# The healthcheck lives in the Dockerfile.
 #
-# Coolify: New Resource -> Docker Compose (this repo) -> set the env vars listed
-# in coolify.env.example in the resource's "Environment Variables" tab.
+#   Browser -> Cloudflare -> cloudflared (on the Docker host) -> 127.0.0.1:PORT -> app (listens on PORT)
 #
-# Routing to the app (pick ONE):
-#   A) Built-in tunnel (recommended): set COMPOSE_PROFILES=tunnel and TUNNEL_TOKEN,
-#      then in Cloudflare Zero Trust -> Tunnels -> Public Hostname add
-#      <your domain> -> HTTP -> app:3000 (the cloudflared container shares this
-#      compose network, so `app` resolves).
-#   B) Existing tunnel / Coolify Traefik: in Coolify set the domain for the `app`
-#      service as `http://<your domain>:3000` (http, port 3000) and point the
-#      tunnel at Coolify's proxy (http://localhost:80 or http://coolify-proxy:80).
-#
-# No ports are published to the host: Coolify/Traefik/cloudflared reach the app
-# over the internal network, so nothing collides with other Coolify resources.
+# Coolify: set PORT (unique per app on the host; 9203/9204 are taken, next free is 9205),
+# leave Domains empty, then the Cloudflare Public Hostname service is HTTP 127.0.0.1:<PORT>.
+# Other required variables are listed in coolify.env.example.
+# If cloudflared runs as a container instead of on the host, enable the bundled one
+# (COMPOSE_PROFILES=tunnel + TUNNEL_TOKEN, service http://app:<PORT>).
 
 name: pubpub
 
@@ -82,31 +77,24 @@ services:
         restart: unless-stopped
         environment:
             <<: *app-env
-            PORT: "3000"
-        expose:
-            - "3000"
+            PORT: ${PORT:?set PORT}
+        ports:
+            - "127.0.0.1:${PORT}:${PORT}"
         depends_on:
             db:
                 condition: service_healthy
             rabbitmq:
                 condition: service_healthy
         networks: [appnet]
-        healthcheck:
-            test:
-                - CMD-SHELL
-                - >
-                    node -e "require('http').get('http://127.0.0.1:3000/api/health', r => process.exit(r.statusCode < 400 ? 0 : 1)).on('error', () => process.exit(1))"
-            interval: 15s
-            timeout: 5s
-            retries: 6
-            # first boot runs sequelize.sync + search trigger install
-            start_period: 120s
 
     worker:
         build: *build
         image: pubpub-app:${SOURCE_COMMIT:-local}
         restart: unless-stopped
         command: ["pnpm", "run", "workers-prod"]
+        # the Dockerfile healthcheck probes the web port, which the worker does not serve
+        healthcheck:
+            disable: true
         environment:
             <<: *app-env
         depends_on:

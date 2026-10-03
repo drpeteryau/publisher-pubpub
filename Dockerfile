@@ -79,4 +79,9 @@ COPY --from=builder /app/pnpm-lock.yaml /app/pnpm-lock.yaml
 
 EXPOSE 3000
 
+# Probes the port the app listens on (PORT is set at runtime, e.g. by compose).
+# First boot runs sequelize.sync + search trigger install, hence the long start period.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=120s --retries=6 \
+  CMD curl -fsS "http://127.0.0.1:${PORT}/api/health" >/dev/null || exit 1
+
 CMD ["pnpm", "run", "api-prod"]
