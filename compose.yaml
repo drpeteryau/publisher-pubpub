@@ -1,19 +1,19 @@
 # Coolify / Cloudflare Tunnel deployment for PubPub.
+# Same pattern as nursing-night-shift / nursing-lab-gentle-truths (see their DEPLOY.md):
 #
-# Coolify: New Resource -> Docker Compose (this repo) -> set the env vars listed
-# in coolify.env.example in the resource's "Environment Variables" tab.
+#   Browser -> Cloudflare -> cloudflared (on the Docker host) -> 127.0.0.1:PORT -> app (listens on PORT)
 #
-# Routing to the app (pick ONE):
-#   A) Built-in tunnel (recommended): set COMPOSE_PROFILES=tunnel and TUNNEL_TOKEN,
-#      then in Cloudflare Zero Trust -> Tunnels -> Public Hostname add
-#      <your domain> -> HTTP -> app:3000 (the cloudflared container shares this
-#      compose network, so `app` resolves).
-#   B) Existing tunnel / Coolify Traefik: in Coolify set the domain for the `app`
-#      service as `http://<your domain>:3000` (http, port 3000) and point the
-#      tunnel at Coolify's proxy (http://localhost:80 or http://coolify-proxy:80).
+#   1. Coolify: New Resource -> Docker Compose (this repo). Leave the Domains field
+#      EMPTY (a domain makes Traefik step in and forward to port 80 -> 502).
+#   2. Set PORT to a port unique on the host (9203 and 9204 are already used by the
+#      nursing apps; 9205 is the next free one) plus the vars in coolify.env.example.
+#   3. Cloudflare Zero Trust -> Tunnels -> Public Hostname: <your domain> ->
+#      HTTP -> 127.0.0.1:<PORT>.
 #
-# No ports are published to the host: Coolify/Traefik/cloudflared reach the app
-# over the internal network, so nothing collides with other Coolify resources.
+# The port is published on loopback only, so it cannot be reached directly from
+# outside and bypass Cloudflare. If cloudflared runs as a container instead of on the
+# host, either enable the bundled one (COMPOSE_PROFILES=tunnel + TUNNEL_TOKEN, hostname
+# service http://app:<PORT>) or use host networking / host.docker.internal.
 
 name: pubpub
 
@@ -82,9 +82,9 @@ services:
         restart: unless-stopped
         environment:
             <<: *app-env
-            PORT: "3000"
-        expose:
-            - "3000"
+            PORT: ${PORT:?set PORT} # app binds 0.0.0.0:$PORT (app.listen without host)
+        ports:
+            - "127.0.0.1:${PORT:?set PORT}:${PORT}"
         depends_on:
             db:
                 condition: service_healthy
@@ -95,7 +95,7 @@ services:
             test:
                 - CMD-SHELL
                 - >
-                    node -e "require('http').get('http://127.0.0.1:3000/api/health', r => process.exit(r.statusCode < 400 ? 0 : 1)).on('error', () => process.exit(1))"
+                    node -e "require('http').get('http://127.0.0.1:' + process.env.PORT + '/api/health', r => process.exit(r.statusCode < 400 ? 0 : 1)).on('error', () => process.exit(1))"
             interval: 15s
             timeout: 5s
             retries: 6
